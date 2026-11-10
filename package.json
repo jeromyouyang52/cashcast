@@ -1,0 +1,24 @@
+{
+  "name": "cashcast",
+  "version": "0.4.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "vitest run",
+    "e2e": "node tests/e2e/run.mjs",
+    "e2e:paypal": "node tests/e2e/paypal.mjs"
+  },
+  "dependencies": {
+    "next": "16.4.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "*",
+    "playwright": "*"
+  },
+  "engines": { "node": "22.x" }
+}
