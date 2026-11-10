@@ -2,8 +2,9 @@
  * Copilot drafts for one PayPal payment: what it is in plain words, and a refund the user can
  * edit. Drafts only. Nothing is sent or refunded until the user confirms in the app.
  *
- * These are deterministic templates today. An AI model can replace `draftRefund`'s note and
- * `explain`'s lines later; the confirm step stays the same either way.
+ * These templates show instantly and are the fallback. Gemini rewrites the wording when
+ * GEMINI_API_KEY is set (src/server/copilot.ts), but only answers that pass `acceptLines` /
+ * `acceptNote` are used. The confirm step is the same either way.
  */
 import type { PPRefund, PPTxn } from "./paypal";
 import { refundable } from "./paypal";
@@ -34,7 +35,9 @@ export function explain(t: PPTxn, refunds: PPRefund[], lang: Lang, daily?: numbe
   const m = (v: number) => money(v, t.currency, lang);
   const when = day(t.at, lang);
   const lines: string[] = [];
-  if (t.kind === "refund") {
+  if (t.kind === "other") {
+    lines.push(zh ? `${when}：${t.description || t.name}，${m(t.amount)}。` : `${t.description || t.name}: ${m(t.amount)} on ${when}.`);
+  } else if (t.kind === "refund") {
     lines.push(zh ? `${when}退给 ${t.name} ${m(Math.abs(t.amount))}。` : `A refund of ${m(Math.abs(t.amount))} to ${t.name} on ${when}.`);
   } else if (t.amount >= 0) {
     lines.push(zh ? `${when}收到 ${t.name} 的 ${m(t.amount)}${t.description ? `（${t.description}）` : ""}。` : `${t.name} paid you ${m(t.amount)} on ${when}${t.description ? ` for “${t.description}”` : ""}.`);
@@ -72,6 +75,56 @@ export interface RefundDraft {
   amount: number;
   max: number;
   note: string;
+}
+
+/**
+ * Guardrails for AI wording. The model may phrase things, but every money-like number it writes
+ * must be one the app already knows (gross, fee, net, refunded, the refund amount, days of spending).
+ * Decimals always count; whole numbers count from 32 up (so dates like "Nov 10" pass), except years.
+ */
+export function numbersOk(text: string, allowed: number[]): boolean {
+  const ok = (n: number) => allowed.some((a) => Math.abs(Math.abs(a) - n) < 0.005);
+  for (const m of text.matchAll(/\d+(?:,\d{3})*(?:\.\d+)?/g)) {
+    const raw = m[0].replace(/,/g, "");
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return false;
+    const decimal = raw.includes(".");
+    if (!decimal && (n < 32 || (n >= 2000 && n <= 2100))) continue;
+    if (!ok(n)) return false;
+  }
+  return true;
+}
+
+const clean = (s: string, max: number) =>
+  s
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
+
+/** The numbers Copilot is allowed to mention for this payment. */
+export function knownNumbers(t: PPTxn, refunds: PPRefund[], daily?: number, extra: number[] = []): number[] {
+  const done = refunds.filter((r) => r.captureId === t.captureId).reduce((x, r) => x + r.amount, 0);
+  const days = daily && daily > 0 ? Math.floor((t.net ?? Math.abs(t.amount)) / daily) : undefined;
+  return [t.amount, t.fee, t.net, done, refundable(t, refunds), days, ...extra].filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+}
+
+/** Accept the model's explanation only if it's 1–4 short lines with no invented numbers. */
+export function acceptLines(v: unknown, allowed: number[]): string[] | null {
+  const raw = (v as { lines?: unknown })?.lines;
+  if (!Array.isArray(raw)) return null;
+  const lines = raw.filter((x): x is string => typeof x === "string").map((x) => clean(x, 220)).filter(Boolean).slice(0, 4);
+  if (!lines.length || !lines.every((l) => numbersOk(l, allowed))) return null;
+  return lines;
+}
+
+/** Accept the model's refund note only if it names the exact refund amount and invents no other numbers. */
+export function acceptNote(v: unknown, amount: number, allowed: number[]): string | null {
+  const raw = (v as { note?: unknown })?.note;
+  if (typeof raw !== "string") return null;
+  const note = clean(raw, 255);
+  if (note.length < 20 || !note.includes(amount.toFixed(2)) || !numbersOk(note, allowed)) return null;
+  return note;
 }
 
 /** A refund draft: full amount by default (half for goodwill), with a short note to the payer (≤ 255 chars, PayPal's limit). */

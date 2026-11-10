@@ -8,7 +8,8 @@
     "start": "next start",
     "test": "vitest run",
     "e2e": "node tests/e2e/run.mjs",
-    "e2e:paypal": "node tests/e2e/paypal.mjs"
+    "e2e:paypal": "node tests/e2e/paypal.mjs",
+    "e2e:copilot": "node tests/e2e/copilot-ai.mjs"
   },
   "dependencies": {
     "next": "16.4.5",

@@ -6,7 +6,7 @@ const BODY = `# Cashcast
 A small money assistant. Each day: one sentence, how much you can spend today, a 3-second check-in,
 and at most two reminders. Behind it, a 30-day cash weather forecast. A cash-flow calculator, not financial advice.
 Bank data never leaves the browser: no accounts, no analytics. Data lives in localStorage ("cashcast.v1").
-The only server code is a PayPal SANDBOX relay under /api/paypal/* (see below).
+The only server code is a PayPal SANDBOX relay under /api/paypal/* and Copilot wording at /api/copilot (see below).
 
 ## Pages
 - /         The app. Three ways in: "Start in 30 seconds" (4 questions: balance + a normal week of spending,
@@ -54,6 +54,9 @@ Host fixed to api-m.sandbox.paypal.com; PAYPAL_ENV other than "sandbox", or any 
 POSTs must be same-origin. Errors return PayPal's error name only. Payer emails are dropped.
 Copilot (src/lib/copilot.ts): explains a payment (gross, fee, net, status, days of everyday spending) and drafts a refund
 (reason → amount + note to payer ≤255 chars). Drafts are editable; nothing is sent without confirmation.
+- POST /api/copilot  {task:"explain"|"refund", txn, refunds, lang, daily?, reason?, amount?} → {source:"gemini", lines|note} | {source:"template"}
+  Gemini (server env GEMINI_API_KEY, free Flash-Lite) writes wording only. The app supplies every number and rejects any answer
+  that invents an amount or omits the exact refund amount; then the template wording stays. Never moves money.
 Local record of sandbox payments/refunds: localStorage "cashcast.paypal".
 
 ## Pasted text

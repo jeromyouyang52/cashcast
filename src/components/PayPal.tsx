@@ -5,7 +5,7 @@
  * to have Copilot explain it or draft a refund. A refund runs only after the user edits or
  * accepts the draft and confirms twice. Nothing is sent on its own.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { draftRefund, explain, money, REASONS, type Reason } from "@/lib/copilot";
 import { merge, refundable, validAmount, type PPRefund, type PPTxn } from "@/lib/paypal";
 import { loadPP, savePP, upsert, type PPLocal } from "@/lib/ppstore";
@@ -20,6 +20,11 @@ async function api<T>(path: string, body?: unknown): Promise<T> {
   if (!r.ok) throw new Error(typeof j.error === "string" ? j.error : `HTTP_${r.status}`);
   return j as T;
 }
+
+// Gemini's wording, per payment state, so reopening a payment doesn't ask again.
+const aiCache = new Map<string, string[]>();
+type AI = { source: "gemini"; lines?: string[]; note?: string } | { source: "template" };
+const copilot = (body: Record<string, unknown>) => api<AI>("/api/copilot", body).catch((): AI => ({ source: "template" }));
 
 const rid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
 
@@ -242,8 +247,33 @@ function TxnSheet({
   onRefund: (r: PPRefund) => void;
 }) {
   const t = tr(lang);
-  const lines = explain(txn, refunds, lang, daily);
+  const mine = refunds.filter((r) => r.captureId === txn.captureId);
+  const key = `${txn.id}|${txn.status}|${mine.reduce((x, r) => x + r.amount, 0)}|${lang}`;
+  const [aiLines, setAiLines] = useState<string[] | null>(() => aiCache.get(key) ?? null);
+  const [thinking, setThinking] = useState(false);
+  const lines = aiLines ?? explain(txn, refunds, lang, daily);
   const max = refundable(txn, refunds);
+
+  // Ask Gemini for friendlier wording; the template shows until (and unless) it answers.
+  useEffect(() => {
+    const hit = aiCache.get(key);
+    if (hit) return setAiLines(hit);
+    let live = true;
+    setAiLines(null);
+    setThinking(true);
+    copilot({ task: "explain", txn, refunds: mine, lang, daily }).then((r) => {
+      if (!live) return;
+      setThinking(false);
+      if (r.source === "gemini" && r.lines?.length) {
+        aiCache.set(key, r.lines);
+        setAiLines(r.lines);
+      }
+    });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
   const [mode, setMode] = useState<"explain" | "refund" | "done">("explain");
   const [reason, setReason] = useState<Reason>("duplicate");
   const [amount, setAmount] = useState("");
@@ -253,13 +283,25 @@ function TxnSheet({
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<PPRefund | null>(null);
   const [requestId] = useState(rid);
+  const [noteBy, setNoteBy] = useState<"template" | "gemini" | "you" | "writing">("template");
+  const seq = useRef(0);
 
+  // Template note at once, then Gemini's version if it arrives before the user starts editing.
   const draft = (r: Reason) => {
     const d = draftRefund(txn, refunds, r, lang);
     setReason(r);
     setAmount(d.amount.toFixed(2));
     setNote(d.note);
     setArmed(false);
+    const n = ++seq.current;
+    setNoteBy("writing");
+    copilot({ task: "refund", txn, refunds: mine, lang, reason: r, amount: d.amount }).then((x) => {
+      if (n !== seq.current) return;
+      if (x.source === "gemini" && x.note) {
+        setNote(x.note);
+        setNoteBy("gemini");
+      } else setNoteBy("template");
+    });
   };
 
   const value = validAmount(amount.replace(/[,$\s]/g, ""));
@@ -285,7 +327,7 @@ function TxnSheet({
   return (
     <Sheet title={txn.name} lang={lang} onClose={onClose}>
       <div className="copilot" data-testid="copilot">
-        <span className="tag">Copilot</span>
+        <span className="tag" aria-live="polite">{aiLines ? "Copilot · Gemini" : thinking ? "Copilot …" : "Copilot"}</span>
         {lines.map((l, i) => (
           <p key={i}>{l}</p>
         ))}
@@ -327,6 +369,8 @@ function TxnSheet({
               inputMode="decimal"
               value={amount}
               onChange={(e) => {
+                seq.current++;
+                if (noteBy === "writing") setNoteBy("template");
                 setAmount(e.target.value);
                 setArmed(false);
               }}
@@ -336,13 +380,18 @@ function TxnSheet({
           </label>
           {value !== null && value > max && <p className="error">{t(`At most ${money(max, txn.currency, lang)}.`, `最多 ${money(max, txn.currency, lang)}。`)}</p>}
           <label className="pp-note">
-            <span className="quiet">{t("Note to the payer (editable)", "给付款人的话（可修改）")}</span>
+            <span className="quiet">
+              {t("Note to the payer (editable)", "给付款人的话（可修改）")}
+              {noteBy === "writing" ? " · …" : noteBy === "gemini" ? t(" · drafted by Gemini", " · Gemini 起草") : ""}
+            </span>
             <textarea
               value={note}
               maxLength={255}
               rows={4}
               onChange={(e) => {
+                seq.current++; // the user's words win over a late draft
                 setNote(e.target.value);
+                setNoteBy("you");
                 setArmed(false);
               }}
               data-testid="pp-note"

@@ -26,6 +26,18 @@ export function startMock(port = 4010) {
       res.writeHead(302, { Location: `${back}&token=${url.searchParams.get("token")}&PayerID=MOCKPAYER1` });
       return res.end();
     }
+    if (req.method === "POST" && /^\/v1beta\/models\/[a-z0-9.-]+:generateContent$/.test(p)) {
+      // Gemini stand-in: echoes the facts it was given, like a well-behaved model.
+      if (req.headers["x-goog-api-key"] !== "mock-gemini") return send(res, 403, { error: { status: "PERMISSION_DENIED" } });
+      const b = JSON.parse(raw);
+      const sys = b.system_instruction.parts[0].text;
+      const d = JSON.parse(b.contents[0].parts[0].text.split("\n").slice(1).join("\n"));
+      const out = sys.includes('"note"')
+        ? { note: `Hi ${d.payer.split(" ")[0]}, I've refunded ${d.refund_text} (AI). It should show in your PayPal account within a few days.` }
+        : { lines: [`(AI) ${d.payer} paid ${d.gross_text}.`, `After ${d.fee_text} in fees, ${d.net_text} lands.`] };
+      stats.gemini = (stats.gemini ?? 0) + 1;
+      return send(res, 200, { candidates: [{ content: { parts: [{ text: JSON.stringify(out) }] } }] });
+    }
     if (req.method === "POST" && p === "/v1/oauth2/token") {
       return req.headers.authorization?.startsWith("Basic ") ? send(res, 200, { access_token: "mock-token", expires_in: 3600 }) : send(res, 401, { error: "invalid_client" });
     }
